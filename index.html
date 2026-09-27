@@ -14,6 +14,8 @@
   .panel { background:var(--paper); border:3px solid var(--ink); border-radius:12px; box-shadow:5px 5px 0 var(--ink); }
   .bang { font-family:Bangers, Impact, sans-serif; font-weight:400; letter-spacing:1px; }
   body.title .game-ui { display:none !important; }
+  body.view #toast, body.view .pop, body.view #tip { display:none !important; }
+  body.shot .game-ui, body.shot #speedlines { display:none !important; }
 
   /* ---------- in-game UI ---------- */
   #title { position:fixed; top:12px; left:16px; font-family:Bangers, Impact, sans-serif; font-size:clamp(28px, 4.6vw, 50px); letter-spacing:2px; margin:0;
@@ -40,7 +42,7 @@
   button[data-ride=plane] { background:var(--yellow); } button[data-ride=car] { background:var(--red); color:#fff; }
   button[data-ride=tractor] { background:var(--green); } button[data-ride=yacht] { background:var(--blue); } button[data-ride=balloon] { background:var(--orange); } button[data-ride=train] { background:#b388ff; color:#fff; }
   #exitRide { background:#fff; display:none; }
-  #hud { position:fixed; top:68px; right:16px; padding:10px 14px; width:250px; display:none; font-size:14px; }
+  #hud { position:fixed; top:68px; right:16px; padding:10px 14px; width:285px; display:none; font-size:14px; }
   #hud .big { font-family:Bangers, Impact, sans-serif; font-size:28px; letter-spacing:1px; line-height:1; }
   #hud .meter { height:12px; border:2px solid var(--ink); border-radius:6px; margin:6px 0 8px; overflow:hidden; background:#fff; }
   #hud .meter i { display:block; height:100%; width:0; background:repeating-linear-gradient(45deg, var(--red) 0 6px, #ff8a3d 6px 12px); }
@@ -986,7 +988,8 @@ for (let i = 0; i < 18; i++) {  // zoo trees between enclosures
   addObstacle(ZOO.dir, 0.25, 0.4, RS + hubY + rad + 0.1);
   const root = placeObj(new THREE.Group(), mul(F, M(0, hubY, 0)));
   const wb = new Batcher();
-  [-0.05, 0.05].forEach(z => wb.add(G.torus, M(0, 0, z, rad * 2, rad * 2, 1), 0xff4d4d));
+  const rim = new THREE.TorusGeometry(0.5, 0.028, 6, 40);
+  [-0.06, 0.06].forEach(z => wb.add(rim, M(0, 0, z, rad * 2, rad * 2, rad * 2), 0xff4d4d));
   for (let k = 0; k < 8; k++) wb.add(G.boxC, M(0, 0, 0, 0.012, rad * 2, 0.012, 0, 0, k * Math.PI / 8), 0xffffff);
   wb.add(G.cylC, M(0, 0, 0, 0.06, 0.14, 0.06, Math.PI / 2, 0, 0), 0xffe14d);
   const wheel = wb.build(); root.add(wheel);
@@ -2938,7 +2941,10 @@ function releaseRider() {
 }
 function startRide(v) {
   if (!v || v === rider || mode === 'title') return;
-  wipe(RIDE_CFG[v.kind].label + '!', () => {
+  wipe(RIDE_CFG[v.kind].label + '!', () => enterRide(v));
+}
+function enterRide(v) {
+  {
     const prev = releaseRider();
     rider = v; mode = 'ride'; v.ai = null; flyTo = null;
     if (v.kind === 'plane') { if (v.r < RS + 0.3) { v.speed = 1.2; v.vs = 0.9; } else { v.speed = Math.max(v.speed, 1.5); v.vs = 0; } }
@@ -2950,7 +2956,7 @@ function startRide(v) {
     setRideUI();
     pop(RIDE_CFG[v.kind].sfx, v.obj.position.clone().addScaledVector(v.p, 0.2));
     toast(`${RIDE_CFG[v.kind].emoji} You took the wheel!${v.taskLabel ? ' <i>(its job is on hold)</i>' : ''}${prev ? ` The ${prev.name.toLowerCase()} goes back to work.` : ''}`, 3);
-  });
+  }
 }
 function endRide() {
   if (mode !== 'ride') return;
@@ -3435,6 +3441,8 @@ function snapPhoto() {
   Sound.fx.shutter(); toast('📸 SNAP! Your comic panel was saved to downloads.', 2.5);
 }
 $('playBtn').addEventListener('click', startGame);
+// browsers only allow audio after a user gesture: wake it on the first click / tap / key (matters for #view links)
+['pointerdown', 'keydown', 'touchstart'].forEach(ev => addEventListener(ev, () => { if (mode !== 'title') Sound.resume(); }, { passive: true }));
 $('btnPlanet').addEventListener('click', () => { if (mode === 'ride') endRide(); else zoomOut(); });
 $('btnNight').addEventListener('click', () => setNight(nightTarget < 0.5));
 $('btnSound').addEventListener('click', toggleMute);
@@ -3448,6 +3456,74 @@ $('creditsBtn').addEventListener('click', () => {
     Sound.credits().map(c => `• <a href="${c.page}" target="_blank" rel="noopener">${esc(c.title)}</a> by ${esc(c.author)} (${esc(c.licence)})`).join('<br>') +
     '<br><br><b>Animated horse, flamingo, parrot &amp; stork</b> by mirada / ro.me, from the three.js examples.<br><b>3D engine</b>: three.js. Everything else is hand-built for Comic Planet.';
 });
+
+// ============================================================ shareable camera views: index.html#view=train  (&ui=1 keeps the HUD, &night=1 for night)
+let shot = null;
+const _sa = new V3(), _sb = new V3(), _sc = new V3();
+function shotCam(dt) {
+  if (shot) shot(dt);
+  if (camera.near !== 0.01) { camera.near = 0.01; camera.updateProjectionMatrix(); }
+}
+function lookFrom(pos, target) { camera.position.copy(pos); camera.up.copy(pos).normalize(); camera.lookAt(target); }
+const at = (reg, x, z, h, out) => regionDir(reg, x, z, out).multiplyScalar(RS + h);
+// follow a mover from the side: back = along its heading, side = to its left, up = away from the planet
+function followCam(v, back, side, up, lookAhead = 0.2, lookUp = 0.05) {
+  const p = v.obj.position;
+  _sc.crossVectors(v.p, v.f);
+  lookFrom(_sa.copy(p).addScaledVector(v.f, -back).addScaledVector(_sc, side).addScaledVector(v.p, up), _sb.copy(p).addScaledVector(v.f, lookAhead).addScaledVector(v.p, lookUp));
+}
+const VIEWS = {
+  planet() { mode = 'orbit'; camera.up.set(0, 1, 0); camera.position.copy(CITY.dir).applyAxisAngle(UP, -0.45).add(new V3(0, 0.12, 0)).normalize().multiplyScalar(R + fitAlt() * 1.06); zoomAlt = fitAlt() * 1.06; },
+  city() { mode = 'shot'; shot = () => lookFrom(at(CITY, 1.2, -4.3, 1.55, _sa), at(CITY, 0, -0.4, 0.45, _sb)); },
+  zoo() { mode = 'shot'; shot = () => lookFrom(at(ZOO, 0.35, -2.05, 0.75, _sa), at(ZOO, 0, -0.1, 0.12, _sb)); },
+  pasture() {                                      // ride alongside a galloping horse, looking in at the cows
+    mode = 'shot';
+    shot = () => {
+      const c = at(FARM, PASTURE.x, PASTURE.z, 0.0, _sb);
+      if (!fauna.horses.length) return lookFrom(at(FARM, PASTURE.x + 0.42, PASTURE.z - 1.12, 0.42, _sa), c);
+      const hp = fauna.horses[1].outer.position, up = _sc.copy(hp).normalize();
+      _sa.subVectors(hp, c); _sa.addScaledVector(up, -_sa.dot(up)).normalize();
+      lookFrom(_sa.multiplyScalar(0.6).add(hp).addScaledVector(up, 0.2), c.lerp(hp, 0.35).addScaledVector(up, 0.05));
+    };
+  },
+  farm() {
+    mode = 'shot'; let t = null;
+    shot = () => {
+      if (!t || t.task.mode !== 'work') t = movers.find(v => v.kind === 'tractor' && v.task.mode === 'work') || t || movers.find(v => v.kind === 'tractor');
+      followCam(t, 0.55, 0.62, 0.42, 0.25);
+    };
+  },
+  train() {
+    mode = 'shot';
+    let run = 0, best = 0, bestLen = 0;             // park the train on the longest bridge
+    TRACK.bridge.forEach((b, i) => { run = b ? run + 1 : 0; if (run > bestLen) { bestLen = run; best = i - run + 1; } });
+    TRAIN.s = TRACK.cum[(best + Math.floor(bestLen * 0.45)) % TRACK.N];
+    TRAIN.speed = 0.25; TRAIN.ai = dt => { TRAIN.s += TRAIN.speed * dt; TRAIN.place(); };
+    shot = () => followCam(TRAIN, 0.25, 1.6, 0.52, -0.75, 0.02);
+  },
+  plane() { const v = movers.find(m => m.kind === 'plane' && m.banner) || movers.find(m => m.kind === 'plane'); enterRide(v); ride.cam = 'chase'; ride.dist = 2.1; ride.yaw = -1.25; ride.pitch = 0.1; ride.lastDrag = Infinity; },
+  tractor() { const v = movers.find(m => m.kind === 'tractor' && m.task.mode === 'work') || movers.find(m => m.kind === 'tractor' && m.task.mode !== 'idle') || movers.find(m => m.kind === 'tractor'); enterRide(v); ride.yaw = 0.7; ride.pitch = 0.18; ride.dist = 1.15; ride.lastDrag = Infinity; },
+  yacht() { const v = movers.find(m => m.kind === 'yacht'); enterRide(v); ride.cam = 'far'; },
+};
+function simulate(seconds) {
+  for (let t = 0; t < seconds; t += 0.05) {
+    time += 0.05;
+    for (const a of animators) a(0.05, time);
+    updateClouds(0.05); updateFields(0.05); updateMovers(0.05); TRAIN.placeCars(); updatePuffs(0.05);
+  }
+}
+function applyView() {
+  const q = new URLSearchParams(location.hash.slice(1)), name = q.get('view');
+  if (!name) return;
+  $('start').style.display = 'none'; $('loading').style.display = 'none';
+  startGame();
+  simulate(q.has('warp') ? +q.get('warp') : 45);                  // let the world get busy before the shot
+  document.body.classList.add('view');
+  if (q.get('ui') !== '1') document.body.classList.add('shot');
+  if (q.get('night') === '1') { nightTarget = 1; night = 1; $('btnNight').textContent = '☀️'; }
+  idleT = -1e9;
+  (VIEWS[name] || VIEWS.planet)();
+}
 
 // ============================================================ go!
 camera.position.copy(CITY.dir).applyAxisAngle(UP, -0.5).multiplyScalar(R + zoomAlt + 10);
@@ -3470,7 +3546,7 @@ renderer.setAnimationLoop(() => {
   updateStars(dt, time);
   updateNight(dt);
   updatePuffs(dt);
-  if (mode === 'ride') chaseCam(dt); else orbitCam(dt);
+  if (mode === 'ride') chaseCam(dt); else if (mode === 'shot') shotCam(dt); else orbitCam(dt);
   updateSkyAndLight();
   updateHud();
   updatePops(dt);
@@ -3480,6 +3556,7 @@ renderer.setAnimationLoop(() => {
 });
 setRideUI();
 $('start').scrollTop = 0;
+applyView();
 requestAnimationFrame(() => $('loading').classList.add('done'));
 </script>
 </body>
